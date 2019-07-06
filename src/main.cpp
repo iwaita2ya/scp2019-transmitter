@@ -11,8 +11,8 @@ DigitalOut *led;
 /**
  * Serial
  */
-RawSerial *device; // to devices TODO:Serialに変更してテストしてみる
-RawSerial *transmitter; // to transmitter(XBee)
+Serial *device; // to devices TODO:Serialに変更してテストしてみる
+Serial *transmitter; // to transmitter(XBee)
 // Circular buffers for serial TX and RX data - used by interrupt routines
 const int serialBufferSize = 255;
 
@@ -36,8 +36,8 @@ InterruptIn *resetDevicePin;
 uint8_t isActive;
 
 #ifdef DEBUG
-#define DEBUG_PRINT(x)  transmitter->puts(x)
-#define DEBUG_PUTC(x)  transmitter->putc(x)
+#define DEBUG_PRINT(x) transmitter->puts(x)
+#define DEBUG_PUTC(x) transmitter->putc(x)
 #else
 #define DEBUG_PRINT(x)
 #define DEBUG_PUTC(x)
@@ -70,13 +70,13 @@ int main() {
      * Init Serial
      */
     // device
-    device = new RawSerial(p13, p14, 115200); // tx, rx, baud
-    device->attach(rxDevice, RawSerial::RxIrq);  // device->MCU
+    device = new Serial(p13, p14, 115200); // tx, rx, baud
+    device->attach(rxDevice, Serial::RxIrq);  // device->MCU
 
     // transmitter (XBee)
 //    transmitter = new Serial(p28, p27, 115200); // tx, rx, baud MEMO:こっちが本番設定
-    transmitter = new RawSerial(USBTX, USBRX, 115200); // tx, rx, baud (pc debug)
-//    transmitter->attach(rxTransmitter, RawSerial::RxIrq);  // transmitter->MCU
+    transmitter = new Serial(USBTX, USBRX, 115200); // tx, rx, baud (pc debug)
+//    transmitter->attach(rxTransmitter, Serial::RxIrq);  // transmitter->MCU
 //    transmitter->attach(TxTransmitter, Serial::TxIrq);// MCU->transmitter
 
     /**
