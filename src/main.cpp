@@ -11,14 +11,14 @@ DigitalOut *led;
 /**
  * Serial
  */
-RawSerial *device; // to devices
+RawSerial *device; // to devices TODO:Serialに変更してテストしてみる
 RawSerial *transmitter; // to transmitter(XBee)
 // Circular buffers for serial TX and RX data - used by interrupt routines
 const int serialBufferSize = 255;
 
 // might need to increase buffer size for high baud rates
-char rxDeviceBuffer[serialBufferSize+1];
-char rxTransmitterBuffer[serialBufferSize+1];
+unsigned char rxDeviceBuffer[serialBufferSize+1];
+unsigned char rxTransmitterBuffer[serialBufferSize+1];
 
 // Circular buffer pointers. Volatile makes read-modify-write atomic
 volatile int rxDeviceInPointer=0;
@@ -27,9 +27,11 @@ volatile int rxTransmitterInPointer=0;
 volatile int rxTransmitterOutPointer=0;
 
 // Line buffers for sprintf and sscanf
-char rxDeviceLineBuffer[64];
-char rxTransmitterLineBuffer[64];
+unsigned char rxDeviceLineBuffer[64];
+unsigned char rxTransmitterLineBuffer[64];
 
+InterruptIn *startDevicePin;
+InterruptIn *resetDevicePin;
 
 uint8_t isActive;
 
@@ -52,8 +54,10 @@ void rxTransmitter();
 void TxTransmitter(); // transmitterでデータ送信時に呼ばれる
 
 // ----- OLED -----
-void drawStatus(uint8_t statusByte);
+void drawStatus(uint8_t statusByte, float pressureSeaLevel, float currentPressure, uint16_t groundAltitude, uint16_t currentAltitude);
 
+// ----- Commands -----
+void changeStatusParachute(uint8_t statusByte);
 
 // Main  ----------------------------------------------------------------------
 int main() {
@@ -65,11 +69,14 @@ int main() {
     /**
      * Init Serial
      */
+    // device
     device = new RawSerial(p13, p14, 115200); // tx, rx, baud
+    device->attach(rxDevice, RawSerial::RxIrq);  // device->MCU
+
     // transmitter (XBee)
 //    transmitter = new Serial(p28, p27, 115200); // tx, rx, baud MEMO:こっちが本番設定
     transmitter = new RawSerial(USBTX, USBRX, 115200); // tx, rx, baud (pc debug)
-    transmitter->attach(rxTransmitter, RawSerial::RxIrq);  // transmitter->MCU
+//    transmitter->attach(rxTransmitter, RawSerial::RxIrq);  // transmitter->MCU
 //    transmitter->attach(TxTransmitter, Serial::TxIrq);// MCU->transmitter
 
     /**
@@ -90,6 +97,14 @@ int main() {
     // update display
     oled->update();
 
+    /*
+     * Init Pins(Buttons)
+     */
+    startDevicePin = new InterruptIn(p17); // デバイス開始ボタン
+    startDevicePin->mode(PullUp);
+//    startDevicePin->fall(&changeStatusParachute(0x01));
+
+
     /**
      * Init LED
      */
@@ -99,27 +114,44 @@ int main() {
     /**
      * Main Loop
      */
-    while(isActive) {
-        // transmitter へデータを送るために割り込み設定
-        //transmitter->attach(TxTransmitter, Serial::TxIrq);
+    volatile int intDecoded;
 
-//        // data received from device and not read yet?
-//        if (rxDeviceInPointer != rxDeviceOutPointer) {
-//            DEBUG_PRINT("Read into buffer\r\n");
-//
-//            // rxDeviceLineBuffer に読み込む
-//            readDeviceLineBuffer();
-//            uint8_t statusByte = rxDeviceLineBuffer[0];
-//            drawStatus(statusByte);
-//        }
+    while(isActive) {
 
         // data received from device and not read yet?
-        if (rxTransmitterInPointer != rxTransmitterOutPointer) {
-            // rxTransmissionLineBuffer に読み込む
-            readTransmitterLineBuffer();
-            uint8_t statusByte = rxTransmitterLineBuffer[0];
-            drawStatus(statusByte);
+        if (rxDeviceInPointer != rxDeviceOutPointer) {
+            // rxDeviceLineBuffer に読み込む
+            readDeviceLineBuffer();
+
+            // prepare data
+            uint8_t statusByte = rxDeviceLineBuffer[0];
+            intDecoded = (rxDeviceLineBuffer[4] << 24 | rxDeviceLineBuffer[3] << 16 | rxDeviceLineBuffer[2] << 8 | rxDeviceLineBuffer[1]);
+            float pressureAtSeaLevel = *((float*)&intDecoded);
+
+            intDecoded = (rxDeviceLineBuffer[8] << 24 | rxDeviceLineBuffer[7] << 16 | rxDeviceLineBuffer[6] << 8 | rxDeviceLineBuffer[5]);
+            float currentPressure = *((float*)&intDecoded);
+
+            uint16_t groundAltitude  = (rxDeviceLineBuffer[10] << 8 | rxDeviceLineBuffer[9]);
+            uint16_t currentAltitude = (rxDeviceLineBuffer[12] << 8 | rxDeviceLineBuffer[11]);;
+
+            //MEMO: OLEDに表示
+            drawStatus(statusByte, pressureAtSeaLevel, currentPressure, groundAltitude, currentAltitude);
         }
+
+//        // data received from transmitter and not read yet?
+//        if (rxTransmitterInPointer != rxTransmitterOutPointer) {
+//            // rxTransmissionLineBuffer に読み込む
+//            readTransmitterLineBuffer();
+//
+////            // OLEDに表示してみる
+////            uint8_t statusByte = rxTransmitterLineBuffer[0];
+////
+////            intDecoded = (rxTransmitterLineBuffer[4] << 24 | rxTransmitterLineBuffer[3] << 16 | rxTransmitterLineBuffer[2] << 8 | rxTransmitterLineBuffer[1]);
+////            float decoded = *((float*)&intDecoded);
+////
+////            drawStatus(statusByte, decoded);
+//            device->puts((char*)rxTransmitterLineBuffer);
+//        }
 
         // update led
         led->write(!led->read());
@@ -140,11 +172,8 @@ int main() {
  * Serial
  */
 
-// data received from device
+// device -> MCU
 void rxDevice() {
-    //TODO: 現在のモードによって、LCDに表示したり、transmitter にパススルーしたりする
-
-    //MEMO: とりあえずLCDに表示する
     // Loop just in case more than one character is in UART's receive FIFO buffer Stop if buffer full
     while ((device->readable()) && (((rxDeviceInPointer + 1) % serialBufferSize) != rxDeviceOutPointer)) {
         rxDeviceBuffer[rxDeviceInPointer] = device->getc();
@@ -156,7 +185,7 @@ void rxDevice() {
     }
 }
 
-// Read a line from the large rx buffer from rx interrupt routine
+// Read a line from the large rx buffer (device)
 void readDeviceLineBuffer() {
 
     uint8_t i = 0;
@@ -165,7 +194,6 @@ void readDeviceLineBuffer() {
     NVIC_DisableIRQ(UART1_IRQn); // UART1 Interrupt
 
     // Loop reading rx buffer characters until end of line character
-//    while ((i==0) || (rxDeviceLineBuffer[i-1] != '\r')) { // '\r' = 0x0d
     while ((i==0) || rxDeviceInPointer != rxDeviceOutPointer) {
         rxDeviceLineBuffer[i++] = rxDeviceBuffer[rxDeviceOutPointer];
         rxDeviceOutPointer = (rxDeviceOutPointer + 1) % serialBufferSize;
@@ -173,11 +201,10 @@ void readDeviceLineBuffer() {
 
     // End Critical Section
     NVIC_EnableIRQ(UART1_IRQn);
-//    rxDeviceLineBuffer[i-1] = 0;
 }
 
 
-// data received from transmitter
+// transmitter -> MCU
 void rxTransmitter() {
 
     // pass-through to device
@@ -194,6 +221,7 @@ void rxTransmitter() {
     }
 }
 
+// Read a line from the large rx buffer (transmitter)
 void readTransmitterLineBuffer() {
 
     uint8_t i = 0;
@@ -202,23 +230,20 @@ void readTransmitterLineBuffer() {
     NVIC_DisableIRQ(UART0_IRQn); // UART0 Interrupt(USBTx, USBRx) //FIXME: p27,p28 を使う場合は UART2_IRQn
 
     // Loop reading rx buffer characters until end of line character
-//    while ((i==0) || (rxTransmitterLineBuffer[i-1] != '\r')) { // '\r' = 0x0d
     while ((i==0) || rxTransmitterInPointer != rxTransmitterOutPointer) {
-        rxTransmitterLineBuffer[i] = rxTransmitterBuffer[rxTransmitterOutPointer];
-        i++;
+        rxTransmitterLineBuffer[i++] = rxTransmitterBuffer[rxTransmitterOutPointer];
         rxTransmitterOutPointer = (rxTransmitterOutPointer + 1) % serialBufferSize;
     }
 
     // End Critical Section
     NVIC_EnableIRQ(UART0_IRQn);
-//    rxTransmitterLineBuffer[i-1] = 0;
 }
 
 /*
  * OLED Display
  */
 
-void drawStatus(uint8_t statusByte) {
+void drawStatus(uint8_t statusByte, float pressureSeaLevel, float currentPressure, uint16_t groundAltitude, uint16_t currentAltitude) {
 
 //    oled->set_display_start_line(0); // draw from the top
     oled->clear();
@@ -234,6 +259,24 @@ void drawStatus(uint8_t statusByte) {
             , ((statusByte & 0x02) ? 1 : 0)
             , ((statusByte & 0x01) ? 1 : 0)
     );
+    oled->printf("Pss  0m: %d Pa\r\n", (int)(pressureSeaLevel));
+    oled->printf("Pss Cur: %d Pa\r\n", (int)(currentPressure));
+    oled->printf("Gnd Alt: %u m\r\n", groundAltitude);
+    oled->printf("Cur Alt: %u m\r\n", currentAltitude);
 
     oled->update();
+}
+
+/**
+ * Parachute のステータスを更新する
+ * @param statusByte
+ */
+void changeStatusParachute(uint8_t statusByte) {
+    char commandArray[2];
+    commandArray[0]= 0x20;
+    commandArray[1]= statusByte;
+
+    // parachute にコマンドを送る
+    device->puts(commandArray);
+    wait_ms(100);
 }
