@@ -1,4 +1,4 @@
-#define DEBUG
+//#define DEBUG
 
 #include <mbed.h>
 #include <ssd1306.h>
@@ -30,6 +30,7 @@ volatile int rxTransmitterOutPointer=0;
 unsigned char rxDeviceLineBuffer[64];
 unsigned char rxTransmitterLineBuffer[64];
 
+InterruptIn *configDevicePin;
 InterruptIn *startDevicePin;
 InterruptIn *resetDevicePin;
 
@@ -56,8 +57,16 @@ void TxTransmitter(); // transmitterでデータ送信時に呼ばれる
 // ----- OLED -----
 void drawStatus(uint8_t statusByte, float pressureSeaLevel, float currentPressure, uint16_t groundAltitude, uint16_t currentAltitude);
 
-// ----- Commands -----
-void changeStatusParachute(uint8_t statusByte);
+// ----- Commands (parachute)-----
+// 現在のステータスをリクエスト
+void requestParachuteStatus();
+// 地表高度設定
+static void setParachuteGroundAltitude();
+// デバイス開始
+static void startParachute();
+// デバイス初期化
+static void resetParachute();
+
 
 // Main  ----------------------------------------------------------------------
 int main() {
@@ -88,10 +97,10 @@ int main() {
     oled->set_contrast(255); // 0-255(max)
     // Bold font test
     oled->set_font(bold_font, 8);
-    oled->printf("Bold Font\r\n");
+    oled->printf("SPC2019 TESTER\r\n");
     // Standard Font test
     oled->set_font(standard_font, 6);
-    oled->printf("Hello World!\r\n");
+    oled->printf("     Ver 0.0.1\r\n");
     oled->printf("123456789012345678901234567890\r\n");
     oled->printf("ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n");
     // update display
@@ -100,10 +109,16 @@ int main() {
     /*
      * Init Pins(Buttons)
      */
+    // パラシュートテスト用
     startDevicePin = new InterruptIn(p17); // デバイス開始ボタン
     startDevicePin->mode(PullUp);
-//    startDevicePin->fall(&changeStatusParachute(0x01));
-
+    startDevicePin->fall(&startParachute);
+    resetDevicePin = new InterruptIn(p18); // デバイスリセットボタン
+    resetDevicePin->mode(PullUp);
+    resetDevicePin->fall(&resetParachute);
+    configDevicePin = new InterruptIn(p12); // デバイス設定ボタン
+    configDevicePin->mode(PullUp);
+    configDevicePin->fall(&setParachuteGroundAltitude);
 
     /**
      * Init LED
@@ -116,9 +131,23 @@ int main() {
      */
     volatile int intDecoded;
 
+    // パラシュート初期化
+    resetParachute();
+    wait_ms(100);
+    // 地表高度設定
+    setParachuteGroundAltitude();
+    wait_ms(1000);
+    // デバイス開始
+    startParachute();
+    wait_ms(100);
+
     while(isActive) {
 
-        // data received from device and not read yet?
+        // パラシュートへデータ要求
+        requestParachuteStatus();
+        wait_ms(100);
+
+        //MEMO: デバイスからの受信データ処理
         if (rxDeviceInPointer != rxDeviceOutPointer) {
             // rxDeviceLineBuffer に読み込む
             readDeviceLineBuffer();
@@ -134,10 +163,11 @@ int main() {
             uint16_t groundAltitude  = (rxDeviceLineBuffer[10] << 8 | rxDeviceLineBuffer[9]);
             uint16_t currentAltitude = (rxDeviceLineBuffer[12] << 8 | rxDeviceLineBuffer[11]);;
 
-            //MEMO: OLEDに表示
+            //MEMO: とりあえずOLEDに表示
             drawStatus(statusByte, pressureAtSeaLevel, currentPressure, groundAltitude, currentAltitude);
         }
 
+        //MEMO: XBeeからの受信データ処理
 //        // data received from transmitter and not read yet?
 //        if (rxTransmitterInPointer != rxTransmitterOutPointer) {
 //            // rxTransmissionLineBuffer に読み込む
@@ -268,15 +298,30 @@ void drawStatus(uint8_t statusByte, float pressureSeaLevel, float currentPressur
 }
 
 /**
- * Parachute のステータスを更新する
- * @param statusByte
+ * Parachute モジュール関連コマンド
  */
-void changeStatusParachute(uint8_t statusByte) {
-    char commandArray[2];
-    commandArray[0]= 0x20;
-    commandArray[1]= statusByte;
+// 状態情報を要求
+void requestParachuteStatus() {
+    device->putc(0x50);
+    device->putc(0x0d);
+}
+// 地表高度セット
+static void setParachuteGroundAltitude() {
+    // コマンド送信
+    device->putc(0xF0);
+    device->putc(0x0d);
+}
 
-    // parachute にコマンドを送る
-    device->puts(commandArray);
-    wait_ms(100);
+// デバイス開始
+static void startParachute() {
+    // コマンド送信
+    device->putc(0xF1);
+    device->putc(0x0d);
+}
+
+// デバイス初期化
+static void resetParachute() {
+    // コマンド送信
+    device->putc(0xF2);
+    device->putc(0x0d);
 }
